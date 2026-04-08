@@ -47,6 +47,8 @@ jobs:
 
               # 1. Go to your bot folder
               cd ${{ secrets.DEPLOY_PATH }}
+              
+              ls -la
 
               # Mark the directory as safe for git operations
               sudo git config --global --add safe.directory ${{ secrets.DEPLOY_PATH }}
