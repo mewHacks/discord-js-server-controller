@@ -1,0 +1,123 @@
+const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
+const config = require('../config');
+const { startVM, stopVM, getVMStatus } = require('../services/vmService');
+
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds],
+});
+
+// ─── Status colour mapping ──────────────────────────────────────────
+const STATUS_COLORS = {
+  RUNNING: 0x00c853,     // green
+  STOPPED: 0xd50000,     // red
+  STOPPING: 0xff6d00,    // orange
+  STAGING: 0xffab00,     // amber
+  PROVISIONING: 0x2979ff, // blue
+  SUSPENDING: 0xff6d00,
+  SUSPENDED: 0x9e9e9e,
+  TERMINATED: 0x616161,
+};
+
+// ─── Interaction handler ────────────────────────────────────────────
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+
+  const { commandName } = interaction;
+
+  // ── /vm-status ──────────────────────────────────────────────────
+  if (commandName === 'vm-status') {
+    await interaction.deferReply();
+    try {
+      const info = await getVMStatus();
+      const embed = new EmbedBuilder()
+        .setTitle('📊  VM Status')
+        .setColor(STATUS_COLORS[info.status] ?? 0x607d8b)
+        .addFields(
+          { name: 'Name', value: info.name, inline: true },
+          { name: 'Status', value: info.status, inline: true },
+          { name: 'Machine Type', value: info.machineType, inline: true },
+          { name: 'Zone', value: info.zone, inline: true },
+          { name: 'External IP', value: info.externalIp, inline: true },
+        )
+        .setTimestamp();
+
+      await interaction.editReply({ embeds: [embed] });
+    } catch (err) {
+      console.error(err);
+      await interaction.editReply(`❌  Failed to get VM status: ${err.message}`);
+    }
+  }
+
+  // ── /vm-start ───────────────────────────────────────────────────
+  if (commandName === 'vm-start') {
+    await interaction.deferReply();
+    try {
+      const embed = new EmbedBuilder()
+        .setTitle('🚀  Starting VM…')
+        .setDescription('Sending start request to Google Cloud.')
+        .setColor(0x2979ff)
+        .setTimestamp();
+      await interaction.editReply({ embeds: [embed] });
+
+      const msg = await startVM();
+
+      const doneEmbed = new EmbedBuilder()
+        .setTitle('✅  VM Started')
+        .setDescription(msg)
+        .setColor(0x00c853)
+        .setTimestamp();
+      await interaction.followUp({ embeds: [doneEmbed] });
+    } catch (err) {
+      console.error(err);
+      await interaction.followUp(`❌  Failed to start VM: ${err.message}`);
+    }
+  }
+
+  // ── /vm-stop ────────────────────────────────────────────────────
+  if (commandName === 'vm-stop') {
+    await interaction.deferReply();
+    try {
+      const embed = new EmbedBuilder()
+        .setTitle('🛑  Stopping VM…')
+        .setDescription('Sending stop request to Google Cloud.')
+        .setColor(0xff6d00)
+        .setTimestamp();
+      await interaction.editReply({ embeds: [embed] });
+
+      const msg = await stopVM();
+
+      const doneEmbed = new EmbedBuilder()
+        .setTitle('✅  VM Stopped')
+        .setDescription(msg)
+        .setColor(0xd50000)
+        .setTimestamp();
+      await interaction.followUp({ embeds: [doneEmbed] });
+    } catch (err) {
+      console.error(err);
+      await interaction.followUp(`❌  Failed to stop VM: ${err.message}`);
+    }
+  }
+});
+
+client.once('ready', () => {
+  console.log(`🤖  Discord bot logged in as ${client.user.tag}`);
+});
+
+/**
+ * Send a rich-embed notification to the configured channel.
+ * Used by the Express server.
+ */
+async function sendNotification({ title, description, color = 0x607d8b }) {
+  const channel = await client.channels.fetch(config.discord.channelId);
+  if (!channel) throw new Error('Notification channel not found.');
+
+  const embed = new EmbedBuilder()
+    .setTitle(title)
+    .setDescription(description)
+    .setColor(color)
+    .setTimestamp();
+
+  await channel.send({ embeds: [embed] });
+}
+
+module.exports = { client, sendNotification };
