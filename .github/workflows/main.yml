@@ -1,0 +1,57 @@
+name: Deploy to Google Cloud VM
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. Checkout the repository code
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # 2. Authenticate with Google Cloud using the Service Account Secret
+      - id: 'auth'
+        uses: 'google-github-actions/auth@v2'
+        with:
+          # This secret holds the JSON key you downloaded
+          credentials_json: '${{ secrets.GCP_SA_KEY }}'
+
+      # 3. Install and configure the gcloud CLI
+      - name: 'Set up Cloud SDK (gcloud)'
+        uses: 'google-github-actions/setup-gcloud@v2'
+        
+      # 4. Connect and Deploy using gcloud compute ssh
+      - name: 'SSH and Deploy Bot'
+        run: |
+          # Gcloud connects using the authenticated Service Account.
+          gcloud compute ssh '${{ secrets.GCP_VM_NAME }}' \
+            --zone='${{ secrets.GCP_ZONE }}' \
+            --project='${{ secrets.GCP_PROJECT_ID }}' \
+            --command='
+              # START Deployment Script on your VM
+              
+              # 1. Go to your bot folder
+              cd /home/foowengwai3/discord-js-server-controller
+
+              # Mark the directory as safe for git operations
+              sudo git config --global --add safe.directory /home/foowengwai3/discord-js-server-controller
+              
+              # 2. Fetch the latest code
+              sudo git fetch origin
+              
+              # 3. Reset local code to match remote
+              # This ensures a clean copy, overriding any local changes
+              sudo git reset --hard origin/main
+              
+              # 4. Install new libraries (if any)
+              sudo npm install
+              
+              # 5. Deploy slash commands to Discord
+              sudo npm run deploy-commands
+              
+              # 6. Restart the bot process
+              sudo systemctl restart discord-bot
+            '
