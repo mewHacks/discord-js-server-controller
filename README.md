@@ -131,7 +131,3 @@ curl -X POST http://localhost:3000/notify/event \
 | `deploy-commands` | `npm run deploy-commands` | Register slash commands with Discord |
 
 ---
-
-## License
-
-ISC
