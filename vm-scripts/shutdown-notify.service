@@ -1,0 +1,26 @@
+[Unit]
+Description=Notify bot VM when the target VM (AI server) is shutting down
+After=network-online.target
+Wants=network-online.target
+# Run before the network goes down so we can still reach the bot VM.
+Before=shutdown.target reboot.target halt.target
+# Ensure we stop before network is torn down.
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# ── URL of the bot VM's Express server ────────────────────────────────
+Environment="BOT_URL=http://BOT_VM_IP:3000"
+# ──────────────────────────────────────────────────────────────────────
+# ExecStart does nothing — the service "starts" immediately on boot.
+ExecStart=/bin/true
+# ExecStop runs the shutdown notification — this fires during system shutdown.
+ExecStop=/opt/vm-scripts/shutdown-notify.sh
+# Give the script enough time to send the notification before systemd kills it.
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
