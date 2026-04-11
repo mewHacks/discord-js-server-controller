@@ -9,7 +9,8 @@
 #  What it does:
 #   1. Copies the shell scripts to /opt/vm-scripts/
 #   2. Installs two systemd services:
-#        • startup-notify.service   — fires /notify/started on every boot
+#        • startup-notify.service    — fires /notify/started on every boot
+#        • shutdown-notify.service   — fires /notify/stopping on every shutdown
 #        • preemption-watcher.service — watches for GCP preemption and fires
 #                                       /notify/stopping ONLY on spot eviction
 #   3. Enables and starts both services.
@@ -17,6 +18,7 @@
 #  After installation you can check status with:
 #    sudo systemctl status preemption-watcher
 #    sudo systemctl status startup-notify
+#    sudo systemctl status shutdown-notify
 #    sudo journalctl -u preemption-watcher -f
 # ============================================================================
 
@@ -82,7 +84,7 @@ echo ""
 # 1. Create install directory and copy scripts
 mkdir -p "${INSTALL_DIR}"
 
-for script in preemption-watcher.sh startup-notify.sh; do
+for script in preemption-watcher.sh startup-notify.sh shutdown-notify.sh; do
   if [[ ! -f "${SCRIPT_DIR}/${script}" ]]; then
     err "Required script not found: ${SCRIPT_DIR}/${script}"
     exit 1
@@ -93,7 +95,7 @@ for script in preemption-watcher.sh startup-notify.sh; do
 done
 
 # 2. Install systemd service files (with BOT_URL substituted in)
-for svc in preemption-watcher.service startup-notify.service; do
+for svc in preemption-watcher.service startup-notify.service shutdown-notify.service; do
   if [[ ! -f "${SCRIPT_DIR}/${svc}" ]]; then
     err "Required service file not found: ${SCRIPT_DIR}/${svc}"
     exit 1
@@ -110,7 +112,7 @@ done
 info "Reloading systemd daemon…"
 systemctl daemon-reload
 
-for svc in startup-notify preemption-watcher; do
+for svc in startup-notify shutdown-notify preemption-watcher; do
   systemctl enable "${svc}.service"
   ok "Enabled ${svc}.service"
 done
@@ -118,6 +120,11 @@ done
 # Start the preemption watcher right now (it's a long-running daemon).
 systemctl start preemption-watcher.service
 ok "Started preemption-watcher.service"
+
+# Start the shutdown-notify service (RemainAfterExit oneshot — sits "active"
+# until the system shuts down, then ExecStop fires the notification).
+systemctl start shutdown-notify.service
+ok "Started shutdown-notify.service"
 
 # startup-notify is a oneshot service — it already ran on this boot.
 # It will fire automatically on the next reboot.
@@ -127,6 +134,7 @@ warn "To test it now, run:  sudo systemctl start startup-notify.service"
 echo ""
 ok "Installation complete!"
 echo ""
-echo "  Check watcher status : sudo systemctl status preemption-watcher"
-echo "  Follow watcher logs  : sudo journalctl -u preemption-watcher -f"
-echo "  Check startup status : sudo systemctl status startup-notify"
+echo "  Check watcher status  : sudo systemctl status preemption-watcher"
+echo "  Follow watcher logs   : sudo journalctl -u preemption-watcher -f"
+echo "  Check startup status  : sudo systemctl status startup-notify"
+echo "  Check shutdown status : sudo systemctl status shutdown-notify"

@@ -1,0 +1,4 @@
+# Force LF line endings for all files in this directory.
+# These scripts run on Linux VMs — CRLF will break them.
+*.sh        text eol=lf
+*.service   text eol=lf

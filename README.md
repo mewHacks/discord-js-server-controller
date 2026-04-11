@@ -39,7 +39,7 @@ A Discord bot built with [Discord.js v14](https://discord.js.org/) that lets you
 | Category | Details |
 |---|---|
 | **VM Control** | Start, stop, and check status of the G2 GCP VM directly from Discord |
-| **Push-Based Notifications** | G2 server pushes lifecycle events (started/stopped/starting/stopping) to the bot |
+| **Push-Based Notifications** | G2 server pushes lifecycle events (started/stopping) to the bot on every boot and shutdown |
 | **Slash Command Notifications** | `/vm-start` and `/vm-stop` also post to the notifications channel (with who triggered it) |
 | **CPU/GPU Alerting** | G2 server pushes utilization metrics; bot alerts on configurable thresholds |
 | **Rich Embeds** | Colour-coded status embeds (🟢 Running, 🔴 Stopped, 🟠 Stopping/Staging, 🔵 Provisioning) |
@@ -62,9 +62,10 @@ A Discord bot built with [Discord.js v14](https://discord.js.org/) that lets you
                     │           ML Training VM                     │
                     │                                              │
                     │  ┌──────────────────────────────────┐       │
-                    │  │  GCP startup/shutdown scripts     │       │
-                    │  │  → POST /notify/started           │       │
-                    │  │  → POST /notify/stopping          │       │
+                    │  │  systemd services (vm-scripts/)   │       │
+                    │  │  • startup-notify   → /started    │       │
+                    │  │  • shutdown-notify  → /stopping   │       │
+                    │  │  • preemption-watcher → /stopping │       │
                     │  └──────────────────────────────────┘       │
                     │  ┌──────────────────────────────────┐       │
                     │  │  cron: report-cpu.sh              │       │
@@ -120,18 +121,28 @@ discordjs/
 ├── start.sh                     # Bash launch script with pre-flight checks
 ├── package.json                 # npm config, scripts, and dependencies
 ├── README.md                    # This file
-└── src/
-    ├── index.js                 # Entry point — boots bot + Express server
-    ├── config.js                # Loads .env, validates required vars, exports config
-    ├── bot/
-    │   ├── bot.js               # Discord client, interaction handler, notifications
-    │   ├── commands.js          # Slash command definitions (/vm-start, /vm-stop, /vm-status)
-    │   └── deploy-commands.js   # One-time script to register commands with Discord API
-    ├── server/
-    │   └── server.js            # Express app — receives push events from G2 server
-    └── services/
-        ├── vmService.js         # GCP Compute Engine SDK wrapper (start/stop/status)
-        └── monitoringService.js # CPU/GPU threshold alerting (push-based)
+├── src/
+│   ├── index.js                 # Entry point — boots bot + Express server
+│   ├── config.js                # Loads .env, validates required vars, exports config
+│   ├── bot/
+│   │   ├── bot.js               # Discord client, interaction handler, notifications
+│   │   ├── commands.js          # Slash command definitions (/vm-start, /vm-stop, /vm-status)
+│   │   └── deploy-commands.js   # One-time script to register commands with Discord API
+│   ├── server/
+│   │   └── server.js            # Express app — receives push events from G2 server
+│   └── services/
+│       ├── vmService.js         # GCP Compute Engine SDK wrapper (start/stop/status)
+│       └── monitoringService.js # CPU/GPU threshold alerting (push-based)
+└── vm-scripts/                  # Scripts deployed ON the G2 server (AI training VM)
+    ├── README.md                # Setup & usage docs for the VM scripts
+    ├── install.sh               # Installer — copies scripts, enables systemd services
+    ├── startup-notify.sh        # Oneshot — POSTs /notify/started on every boot
+    ├── startup-notify.service   # systemd unit for startup-notify
+    ├── shutdown-notify.sh       # Oneshot — POSTs /notify/stopping on every shutdown
+    ├── shutdown-notify.service  # systemd unit for shutdown-notify (ExecStop= trick)
+    ├── preemption-watcher.sh    # Daemon — long-polls GCP metadata for Spot preemption
+    ├── preemption-watcher.service # systemd unit for preemption-watcher
+    └── .gitattributes           # Forces LF line endings (prevents CRLF issues on Windows)
 ```
 
 ---
@@ -345,9 +356,9 @@ The G2 ML training server sends lifecycle events and resource metrics to the bot
 | Event Source | How it reaches the bot | Notification |
 |---|---|---|
 | User runs `/vm-start` or `/vm-stop` | Slash command handler in `bot.js` | Posts starting/started or stopping/stopped to #notifications |
-| G2 boots (GCP startup script) | `POST /notify/started` to EC2 bot | "G2 Server Started" embed |
-| G2 shuts down (GCP shutdown script) | `POST /notify/stopping` to EC2 bot | "G2 Server Stopping" embed |
-| G2 starts via GCP Console / `gcloud` | GCP startup script fires automatically | "G2 Server Started" embed |
+| G2 boots (any method) | `startup-notify.service` → `POST /notify/started` | "G2 Server Started" embed |
+| G2 shuts down (any method) | `shutdown-notify.service` → `POST /notify/stopping` | "G2 Server Stopping" embed |
+| GCP preempts G2 (Spot VM) | `preemption-watcher.service` → `POST /notify/stopping` | "G2 Server Stopping" embed (early warning) |
 | CPU is high (cron on G2) | `POST /monitor/cpu` to EC2 bot | "High CPU Utilization" alert |
 | GPU is high (cron on G2) | `POST /monitor/gpu` to EC2 bot | "High GPU Utilization" alert |
 
@@ -404,25 +415,28 @@ curl http://$BOT_HOST/monitor/status
 
 ### Setting Up the G2 Server to Push Events
 
-#### 1. GCP Startup / Shutdown Scripts (VM metadata)
+#### 1. VM Lifecycle Scripts (vm-scripts/)
 
-These run automatically whenever the G2 server starts or stops — even when triggered from the GCP Console or `gcloud` CLI.
+The `vm-scripts/` directory contains systemd services that run on the G2 server and push lifecycle notifications to the bot. These cover **all** start/stop scenarios:
+
+| Trigger | Service | Notification |
+|---|---|---|
+| VM boots (any method) | `startup-notify` | `POST /notify/started` |
+| VM shuts down (any method) | `shutdown-notify` | `POST /notify/stopping` |
+| GCP Spot preemption | `preemption-watcher` | `POST /notify/stopping` (early warning) |
+
+See [`vm-scripts/README.md`](vm-scripts/README.md) for detailed setup instructions. Quick start:
 
 ```bash
-# Set the bot's EC2 address
-BOT_HOST="<ec2-ip-or-hostname>:3000"
+# Upload scripts to the G2 server
+gcloud compute ssh G2_INSTANCE_NAME --zone YOUR_ZONE --command "rm -rf ~/vm-scripts"
+gcloud compute ssh G2_INSTANCE_NAME --zone YOUR_ZONE --command "mkdir -p ~/vm-scripts"
+gcloud compute scp --recurse vm-scripts/* G2_INSTANCE_NAME:vm-scripts/ --zone YOUR_ZONE
 
-# Add startup script
-gcloud compute instances add-metadata <G2_INSTANCE_NAME> \
-  --zone=<ZONE> \
-  --metadata startup-script="#!/bin/bash
-curl -s -X POST http://${BOT_HOST}/notify/started"
-
-# Add shutdown script
-gcloud compute instances add-metadata <G2_INSTANCE_NAME> \
-  --zone=<ZONE> \
-  --metadata shutdown-script="#!/bin/bash
-curl -s -X POST http://${BOT_HOST}/notify/stopping"
+# SSH in and run the installer
+gcloud compute ssh G2_INSTANCE_NAME --zone YOUR_ZONE
+cd ~/vm-scripts
+sudo bash install.sh --bot-url http://BOT_VM_IP:3000
 ```
 
 #### 2. CPU Monitoring (cron on G2)
@@ -544,7 +558,8 @@ sudo journalctl -u discord-vm-bot -f
 | `EADDRINUSE: address already in use` | Port conflict | Change `EXPRESS_PORT` in `.env` or kill the conflicting process |
 | CPU/GPU alerts not firing | Utilization below threshold or cooldown active | Check thresholds in `.env`; lower `MONITOR_ALERT_COOLDOWN` for testing |
 | G2 events not reaching bot | Network / firewall issue | Ensure EC2 security group allows inbound on `EXPRESS_PORT` from G2's IP |
-| G2 started but no notification | Startup script not set | Set GCP instance metadata `startup-script` (see [G2 setup](#setting-up-the-g2-server-to-push-events)) |
+| G2 started but no notification | vm-scripts not installed on G2 | Run `install.sh` on the G2 server (see [vm-scripts setup](#setting-up-the-g2-server-to-push-events)) |
+| G2 stopped but no notification | `shutdown-notify` service not active | SSH into G2 and run `sudo systemctl start shutdown-notify` (or re-run `install.sh`) |
 
 ---
 
